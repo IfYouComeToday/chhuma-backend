@@ -12,7 +12,10 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "mongodb": "^6.14.2",
     "next": "^15.2.2",
-    "nodemailer": "^6.10.0"
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^6.10.0",
+    "openai": "^4.87.3"
   }
 }
