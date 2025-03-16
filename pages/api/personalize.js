@@ -17,54 +17,71 @@ export default async function handler(req, res) {
   try {
     // 1. Connect to MongoDB
     const client = await clientPromise;
-    const db = client.db('myDB'); // Replace with your actual database name if needed
+    const db = client.db('myDB'); // Replace with your database name if different
 
-    // Define collections: one for ReverseContact data and one for ChatGPT outputs
+    // Collections: one for ReverseContact data and one for AI outputs
     const reverseContacts = db.collection('reverseContacts');
     const chatOutputs = db.collection('chatOutputs');
 
-    // 2. Check if we already have a ChatGPT output for this email (cache)
+    // 2. Check if we already have a ChatGPT output for this email
     const cachedOutput = await chatOutputs.findOne({ email });
     if (cachedOutput) {
       console.log(`Returning cached AI output for email: ${email}`);
       return res.status(200).json({ message: cachedOutput.aiMessage });
     }
 
-    // 3. Retrieve ReverseContact data from DB, or fetch it if not present.
+    // 3. Retrieve ReverseContact data for the email
     let record = await reverseContacts.findOne({ email });
     if (!record) {
-      // Construct the URL for ReverseContact API call.
+      console.log(`No ReverseContact data found in DB for ${email}, calling ReverseContact API...`);
+
+      // URL-encode the email so that "@" becomes "%40"
       const encodedEmail = encodeURIComponent(email);
-      const reverseUrl = `https://api.reversecontact.com/enrichment?apikey=${process.env.REVERSECONTACT_API_KEY}&email=${encodedEmail}`;
-      console.log("Fetching ReverseContact data from:", reverseUrl);
 
-      // Fetch data from ReverseContact
-      const reverseResponse = await fetch(reverseUrl, { method: 'GET' });
+      // Get ReverseContact API key from environment variables
+      const reverseApiKey = process.env.REVERSECONTACT_API_KEY;
+      if (!reverseApiKey) {
+        return res.status(500).json({ error: "ReverseContact API key is not set" });
+      }
+
+      // Construct the API URL
+      const reverseApiUrl = `https://api.reversecontact.com/enrichment?apikey=${reverseApiKey}&email=${encodedEmail}`;
+      console.log("Calling ReverseContact API with URL:", reverseApiUrl);
+
+      // Call the ReverseContact API using fetch
+      const reverseResponse = await fetch(reverseApiUrl, { method: "GET" });
       const reverseData = await reverseResponse.json();
-
+      
       // Check if the API call was successful
       if (!reverseData.success) {
         return res.status(404).json({ error: 'No ReverseContact data found for that email' });
       }
 
-      // Save the fetched ReverseContact data in the database (for caching)
-      await reverseContacts.insertOne({ email, data: reverseData });
+      // Store the retrieved ReverseContact data in MongoDB
+      await reverseContacts.insertOne({
+        email,
+        data: reverseData,
+        createdAt: new Date()
+      });
+
+      // Use the newly stored data as our record
       record = { email, data: reverseData };
     }
 
-    // 4. Extract fields from the ReverseContact data.
+    // 4. Extract the relevant fields from ReverseContact data.
+    // Adjust these fields according to your ReverseContact response structure.
     const person = record.data.person || {};
     const companyData = record.data.company || {};
     const workflowPainPoints = record.data.workflow_pain_points || [];
 
-    // Use defaults if necessary:
     const name = person.firstName || "there";
     const title = person.headline || "Professional";
     const company = companyData.name || "your company";
     const industry = companyData.industry || "your industry";
 
-    // 5. Construct the OpenAI prompt strings.
+    // 5. Construct the OpenAI prompts
 
+    // System prompt based on your prompt guide
     const systemPrompt = `Chhuma API Prompt Guide
 This prompt ensures the OpenAI API correctly replicates Chhuma’s voice, logic, and workflow-based personalization, following OpenAI’s best practices.
 
@@ -109,6 +126,7 @@ Every response should follow this structure:
 • Use lateral insights — frame solutions in a way that makes people rethink assumptions.
 • Break long explanations into structured, readable points — use short paragraphs or bullet points if needed.`;
 
+    // User prompt that includes visitor data
     const userPrompt = `Visitor Data:
 Name: ${name}
 Title: ${title}
@@ -122,14 +140,14 @@ Using the guidelines above, generate a personalized marketing pitch that:
 3. Explains how Chhuma's dynamic content adaptation can solve these issues.
 4. Concludes with a confident call to action.`;
 
-    // 6. Instantiate the OpenAI client using the API key from environment variables.
+    // 6. Instantiate the OpenAI client using the API key from your environment variable.
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
 
     // 7. Call the OpenAI Chat Completions API
-    const response = await openai.responses.create({
-      model: "gpt-3.5-turbo",
+    const openaiResponse = await openai.responses.create({
+      model: "gpt-4", // Use "gpt-4" if needed and available
       input: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
@@ -141,12 +159,12 @@ Using the guidelines above, generate a personalized marketing pitch that:
       store: false
     });
 
-    console.log("OpenAI response:", response);
+    console.log("OpenAI response:", openaiResponse);
 
     // 8. Extract the AI-generated message.
-    const aiMessage = response.output_text || (response.choices && response.choices[0]?.message?.content) || "No content generated";
+    const aiMessage = openaiResponse.output_text || (openaiResponse.choices && openaiResponse.choices[0]?.message?.content) || "No content generated";
 
-    // 9. Cache the generated output in the chatOutputs collection.
+    // 9. Store the generated output in the chatOutputs collection.
     await chatOutputs.insertOne({
       email,
       aiMessage,
