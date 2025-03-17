@@ -8,68 +8,38 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed. Use POST.' });
   }
 
-  // We expect a JSON body with an "email" field.
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ error: "Missing 'email' in request body" });
+  // Expect a JSON body with either an "email" or "linkedInUrl" field.
+  const { email, linkedInUrl } = req.body;
+  if (!email && !linkedInUrl) {
+    return res.status(400).json({ error: "Missing required field: email or linkedInUrl" });
   }
+
+  // Determine the lookup field for MongoDB: use email if provided, otherwise use linkedInUrl.
+  const queryField = email ? { email } : { linkedInUrl };
 
   try {
     // 1. Connect to MongoDB
     const client = await clientPromise;
-    const db = client.db('myDB'); // Replace with your database name if different
+    const db = client.db('myDB'); // Replace with your actual database name if needed
 
-    // Collections: one for ReverseContact data and one for AI outputs
+    // Define collections: one for ReverseContact data and one for ChatGPT outputs.
     const reverseContacts = db.collection('reverseContacts');
     const chatOutputs = db.collection('chatOutputs');
 
-    // 2. Check if we already have a ChatGPT output for this email
-    const cachedOutput = await chatOutputs.findOne({ email });
+    // 2. Check if there's already a cached AI output for this identifier.
+    const cachedOutput = await chatOutputs.findOne(queryField);
     if (cachedOutput) {
-      console.log(`Returning cached AI output for email: ${email}`);
+      console.log(`Returning cached AI output for ${email ? "email" : "LinkedIn URL"}: ${email || linkedInUrl}`);
       return res.status(200).json({ message: cachedOutput.aiMessage });
     }
 
-    // 3. Retrieve ReverseContact data for the email
-    let record = await reverseContacts.findOne({ email });
+    // 3. Retrieve ReverseContact data using the lookup field.
+    const record = await reverseContacts.findOne(queryField);
     if (!record) {
-      console.log(`No ReverseContact data found in DB for ${email}, calling ReverseContact API...`);
-
-      // URL-encode the email so that "@" becomes "%40"
-      const encodedEmail = encodeURIComponent(email);
-
-      // Get ReverseContact API key from environment variables
-      const reverseApiKey = process.env.REVERSECONTACT_API_KEY;
-      if (!reverseApiKey) {
-        return res.status(500).json({ error: "ReverseContact API key is not set" });
-      }
-
-      // Construct the API URL
-      const reverseApiUrl = `https://api.reversecontact.com/enrichment?apikey=${reverseApiKey}&email=${encodedEmail}`;
-      console.log("Calling ReverseContact API with URL:", reverseApiUrl);
-
-      // Call the ReverseContact API using fetch
-      const reverseResponse = await fetch(reverseApiUrl, { method: "GET" });
-      const reverseData = await reverseResponse.json();
-      
-      // Check if the API call was successful
-      if (!reverseData.success) {
-        return res.status(404).json({ error: 'No ReverseContact data found for that email' });
-      }
-
-      // Store the retrieved ReverseContact data in MongoDB
-      await reverseContacts.insertOne({
-        email,
-        data: reverseData,
-        createdAt: new Date()
-      });
-
-      // Use the newly stored data as our record
-      record = { email, data: reverseData };
+      return res.status(404).json({ error: `No ReverseContact data found for that ${email ? "email" : "LinkedIn URL"}` });
     }
 
-    // 4. Extract the relevant fields from ReverseContact data.
-    // Adjust these fields according to your ReverseContact response structure.
+    // 4. Extract the relevant fields from the ReverseContact data.
     const person = record.data.person || {};
     const companyData = record.data.company || {};
     const workflowPainPoints = record.data.workflow_pain_points || [];
@@ -79,9 +49,7 @@ export default async function handler(req, res) {
     const company = companyData.name || "your company";
     const industry = companyData.industry || "your industry";
 
-    // 5. Construct the OpenAI prompts
-
-    // System prompt based on your prompt guide
+    // 5. Construct the OpenAI prompts.
     const systemPrompt = `Chhuma API Prompt Guide
 This prompt ensures the OpenAI API correctly replicates Chhuma’s voice, logic, and workflow-based personalization, following OpenAI’s best practices.
 
@@ -126,7 +94,6 @@ Every response should follow this structure:
 • Use lateral insights — frame solutions in a way that makes people rethink assumptions.
 • Break long explanations into structured, readable points — use short paragraphs or bullet points if needed.`;
 
-    // User prompt that includes visitor data
     const userPrompt = `Visitor Data:
 Name: ${name}
 Title: ${title}
@@ -147,7 +114,7 @@ Using the guidelines above, generate a personalized marketing pitch that:
 
     // 7. Call the OpenAI Chat Completions API
     const openaiResponse = await openai.responses.create({
-      model: "gpt-4", // Use "gpt-4" if needed and available
+      model: "gpt-3.5-turbo", // Change to "gpt-4" if needed
       input: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
@@ -162,16 +129,19 @@ Using the guidelines above, generate a personalized marketing pitch that:
     console.log("OpenAI response:", openaiResponse);
 
     // 8. Extract the AI-generated message.
-    const aiMessage = openaiResponse.output_text || (openaiResponse.choices && openaiResponse.choices[0]?.message?.content) || "No content generated";
+    const aiMessage = openaiResponse.output_text ||
+      (openaiResponse.choices && openaiResponse.choices[0]?.message?.content) ||
+      "No content generated";
 
     // 9. Store the generated output in the chatOutputs collection.
+    const storeQuery = email ? { email } : { linkedInUrl };
     await chatOutputs.insertOne({
-      email,
+      ...storeQuery,
       aiMessage,
       createdAt: new Date()
     });
 
-    console.log(`AI output stored in DB for ${email}.`);
+    console.log(`AI output stored in DB for ${email || linkedInUrl}.`);
 
     // 10. Return the generated message to the client.
     return res.status(200).json({ message: aiMessage });
