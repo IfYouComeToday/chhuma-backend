@@ -6,21 +6,22 @@ import fetch from "node-fetch"; // Only needed if you're using node-fetch for Re
 
 export default async function handler(req, res) {
   //
-  // -- [1] Always set CORS headers for every request (including POST) --
+  // -- [A] Always set CORS headers for every request (including POST) --
   //
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   //
-  // -- [2] Handle the preflight (OPTIONS) request --
+  // -- [B] Handle the preflight (OPTIONS) request --
   //
   if (req.method === "OPTIONS") {
+    // Just return 200 OK for preflight
     return res.status(200).end();
   }
 
   //
-  // -- [3] Enforce POST for the main logic --
+  // -- [C] Enforce POST for the main logic --
   //
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed. Use POST." });
