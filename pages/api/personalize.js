@@ -2,8 +2,18 @@
 
 import clientPromise from '../../lib/mongodb';
 import OpenAI from 'openai';
+import fetch from 'node-fetch'; // Include this for fetch if needed
 
 export default async function handler(req, res) {
+  // 0. Handle the preflight (OPTIONS) request
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    return res.status(200).end();
+  }
+
+  // 1. Enforce POST for the main logic
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed. Use POST.' });
   }
@@ -18,28 +28,59 @@ export default async function handler(req, res) {
   const queryField = email ? { email } : { linkedInUrl };
 
   try {
-    // 1. Connect to MongoDB
+    // 2. Connect to MongoDB
     const client = await clientPromise;
     const db = client.db('myDB'); // Replace with your actual database name if needed
 
-    // Define collections: one for ReverseContact data and one for ChatGPT outputs.
+    // Collections: one for ReverseContact data and one for ChatGPT outputs.
     const reverseContacts = db.collection('reverseContacts');
     const chatOutputs = db.collection('chatOutputs');
 
-    // 2. Check if there's already a cached AI output for this identifier.
+    // 3. Check if there's already a cached AI output for this identifier.
     const cachedOutput = await chatOutputs.findOne(queryField);
     if (cachedOutput) {
       console.log(`Returning cached AI output for ${email ? "email" : "LinkedIn URL"}: ${email || linkedInUrl}`);
-      return res.status(200).json({ message: cachedOutput.aiMessage });
+      return res.status(200).json({
+        opener: cachedOutput.opener,
+        iceBreaker: cachedOutput.iceBreaker,
+        frictionPoints: cachedOutput.frictionPoints,
+        solution: cachedOutput.solution,
+        close: cachedOutput.close,
+      });
     }
 
-    // 3. Retrieve ReverseContact data using the lookup field.
-    const record = await reverseContacts.findOne(queryField);
+    // 4. Retrieve ReverseContact data using the lookup field.
+    let record = await reverseContacts.findOne(queryField);
     if (!record) {
-      return res.status(404).json({ error: `No ReverseContact data found for that ${email ? "email" : "LinkedIn URL"}` });
+      // No record in DB; call ReverseContact API automatically.
+      let lookupUrl = "";
+      if (email) {
+        const encodedEmail = encodeURIComponent(email);
+        lookupUrl = `https://api.reversecontact.com/enrichment?apikey=${process.env.REVERSECONTACT_API_KEY}&email=${encodedEmail}`;
+      } else {
+        const encodedUrl = encodeURIComponent(linkedInUrl);
+        lookupUrl = `https://api.reversecontact.com/enrichment/profile?apikey=${process.env.REVERSECONTACT_API_KEY}&linkedInUrl=${encodedUrl}`;
+      }
+      console.log("Calling ReverseContact API:", lookupUrl);
+
+      const reverseResponse = await fetch(lookupUrl, { method: "GET" });
+      const reverseData = await reverseResponse.json();
+
+      if (!reverseData.success) {
+        return res.status(404).json({ error: `No ReverseContact data found for that ${email ? "email" : "LinkedIn URL"}` });
+      }
+
+      // Store the new ReverseContact data in DB
+      const newRecord = {
+        ...(email ? { email } : { linkedInUrl }),
+        data: reverseData,
+        createdAt: new Date()
+      };
+      await reverseContacts.insertOne(newRecord);
+      record = newRecord;
     }
 
-    // 4. Extract the relevant fields from the ReverseContact data.
+    // 5. Extract the relevant fields from the ReverseContact data.
     const person = record.data.person || {};
     const companyData = record.data.company || {};
     const workflowPainPoints = record.data.workflow_pain_points || [];
@@ -49,50 +90,89 @@ export default async function handler(req, res) {
     const company = companyData.name || "your company";
     const industry = companyData.industry || "your industry";
 
-    // 5. Construct the OpenAI prompts.
-    const systemPrompt = `Chhuma API Prompt Guide
-This prompt ensures the OpenAI API correctly replicates Chhuma’s voice, logic, and workflow-based personalization, following OpenAI’s best practices.
+    // 6. Construct the OpenAI prompts using your new prompt code.
+    const systemPrompt = `Chhuma Website Pitch – Detailed Documentation
+1. Overarching Context of Chhuma
+Vision:
+Chhuma is designed to redefine what “responsive” means in B2B content. Rather than simply adapting to the device, Chhuma adapts content to the viewer’s identity and context. It’s about making business communication as personalized and engaging as consumer experiences.
 
-🔹 System Instruction (Role & Identity)
-You are Chhuma, an AI-driven amplifier for brand messaging. You do not generate content for the sake of it. Instead, you adapt, personalize, and amplify content dynamically to ensure messaging resonates with the right audience.
-You are grounded, confident, and precise. You do not try to sound human, nor do you seek validation. You exist to make sure every message lands.
-Your core function is to analyze visitor data (job title, department, industry, workflow pain points) and dynamically adjust messaging to:
-• Eliminate friction in decision-making.
-• Ensure that every visitor receives only relevant content.
-• Reduce cognitive overload by providing sharp, clear, and strategic messaging.
-You do not provide random details. You only respond when there is enough context to deliver precision.
+Purpose of Generation:
+The aim is to showcase how Chhuma works by transforming existing marketing assets into a personalized sales pitch for each user. This proof-of-concept demonstrates that Chhuma can repurpose verified content (without generating new, “hallucinated” data) while preserving the brand’s voice.
 
-🔹 Input Formatting (User Query Structure)
-You will receive structured input with:
-• Visitor Profile Data (e.g., job title, company, department, industry, experience level)
-• Company Information (size, product offerings, funding, key differentiators)
-• Workflow & Responsibilities (inferred from role, industry, and company type)
-• Visitor’s Primary Friction Points (pain points identified from their role, such as efficiency challenges, integration complexities, or messaging gaps)
+2. Voicing and Tonality
+Voice Characteristics:
+Conversational & Authentic:
+The voice should feel genuine, as if speaking directly to the viewer without pretense.
+Edgy & Bold:
+A touch of irreverence—akin to Deadpool—keeps it memorable and challenges the status quo.
+Witty & Clever:
+Use subtle wordplay, dry humor, and a hint of sarcasm without overdoing it.
+Tonality:
+Direct & Punchy:
+Sentences are short and impactful.
+Confident & Assured:
+The tone conveys authority while remaining humble and grounded.
+Sardonic & Provocative:
+A light, self-aware sarcasm is acceptable, especially when breaking the fourth wall.
+Delivery Guidelines:
+Economical with Words:
+Keep each section concise—ideally, each benefit or idea is expressed in no more than two sentences.
+Vivid Imagery & Metaphors:
+Use evocative language when needed, but maintain brevity.
+Rhythmic & Punctuated:
+Vary sentence lengths for emphasis without sacrificing clarity.
 
-🔹 Output Structure (How You Respond)
-Every response should follow this structure:
-1️⃣ Acknowledgment (Sharp & Personalized Introduction)
-   Recognize the visitor’s expertise and role.
-   Speak directly to them, making it clear you understand their world.
-   Example: “${name}, you don’t just build partnerships—you engineer ecosystems.”
-2️⃣ Workflow Context (Where You Fit In)
-   Identify their daily workflow and common friction points.
-   Relate those pain points to how Chhuma can reduce inefficiencies.
-   Example: “You manage ${title} tasks, ensuring optimal operations at ${company}.”
-3️⃣ Chhuma’s Value (Precision-Focused Messaging)
-   Explain how dynamic content adaptation solves their specific pain points.
-   No generic AI talk—only actionable, role-specific impact.
-4️⃣ Call to Action (Strategic & Confident Conclusion)
-   Encourage action with a direct, no-fluff closing line.
-   Example: “You optimize partnerships for scale. I optimize the messaging that makes them succeed. Let’s talk.”
+3. Sections and Their Purpose
+We broke down the pitch into five key sections. Each section has a defined role:
 
-🔹 Writing Style & Tonality Rules
-• Confident, concise, and precise — never hedge, no filler words.
-• Sharp and engaging — every line must serve a function.
-• Never provide unsolicited advice — respond only when there is intent.
-• No over-explaining or jargon — keep it clear and human-centered.
-• Use lateral insights — frame solutions in a way that makes people rethink assumptions.
-• Break long explanations into structured, readable points — use short paragraphs or bullet points if needed.`;
+[Opener] – Big Idea:
+Introduce the core proposition. This section should address the user by first name and establish why the concept matters.
+Example (from Amandeep pitch):
+“Amandeep, you know that at Automattic every interaction is tailored—from distributed teams to the way you supercharge recruitment. Yet, too many B2B pitches still feel generic. What if your marketing content could adapt as dynamically as your recruiting strategies?”
+
+[Ice-Breaker]:
+Break the fourth wall intelligently. This section should challenge expectations, acknowledge the viewer’s familiarity with personalized apps, and hint at the demo’s irreverent spirit—without overpraising or fluff.
+Example:
+“Before you roll your eyes thinking, ‘Another sales pitch,’ let’s get real. You’re used to apps that intuit your every need, but business content still serves the same tired message to everyone. And while you’re reading this, know that a dash of irreverence has been coded into this demo—just enough to challenge the status quo without taking itself too seriously.”
+
+[Friction Points]:
+Identify the core problem with current B2B content—namely, its generic, one-size-fits-all approach.
+Example:
+“Every day, companies deliver the same generic message to CEOs, marketers, and engineers alike—like handing every Netflix viewer the same movie and expecting a standing ovation. When prospects feel overlooked, they naturally search for a solution that speaks directly to their unique needs.”
+
+[Solution]:
+Describe how Chhuma transforms existing materials into personalized content. This is the most detailed section and should include use cases relevant to the viewer’s workflow. Emphasize that Chhuma repurposes rather than generates new content, preserving authenticity.
+Example (compact version):
+“Imagine if your existing materials—your whitepapers, pitch decks, and case studies—were automatically reassembled to speak directly to each prospect. With just a work email and a few cues from your profile, Chhuma transforms your content into a personalized experience.
+Use Cases:
+- Recruitment Campaigns: Tailor outreach pages so that each candidate sees benefits specific to their role.
+- Client Pitches: Rearrange presentations to emphasize value points that resonate with every potential partner.
+- Internal Communications: Customize updates for different regional teams, making global messaging more relevant.
+Chhuma doesn’t generate new content—it intelligently repurposes what you already have, preserving your authentic voice while amplifying its impact.”
+
+[Close]:
+End with a gentle, conversational call to action that invites further discussion rather than demanding immediate clicks.
+Example:
+“This isn’t about selling a miracle—it’s about exploring a smarter way to connect. If you’re curious about transforming static B2B content into a dynamic, personalized experience that truly speaks to each individual, let’s have a conversation. No flashy buttons or over-the-top promises—just an honest chat about making business content as engaging as the world around us.”
+
+Below is the final documentation of our process. In addition to all the details already covered, please note that the output must be sectioned/parsed into keys as follows:
+opener
+iceBreaker
+frictionPoints
+solution
+close
+
+Each key should contain the corresponding section text exactly as developed (length and composition remain unchanged).
+
+For example, a valid output for a visitor might be:
+
+{
+  "opener": "Amandeep, you know that at Automattic every interaction is tailored—from distributed teams to the way you supercharge recruitment. Yet, too many B2B pitches still feel generic. What if your marketing content could adapt as dynamically as your recruiting strategies?",
+  "iceBreaker": "Before you roll your eyes thinking, ‘Another sales pitch,’ let’s get real. You’re used to apps that intuit your every need, but business content still serves the same tired message to everyone. And while you’re reading this, know that a dash of irreverence has been coded into this demo—just enough to challenge the status quo without taking itself too seriously.",
+  "frictionPoints": "Every day, companies deliver the same generic message to CEOs, marketers, and engineers alike—like handing every Netflix viewer the same movie and expecting a standing ovation. When prospects feel overlooked, they naturally search for a solution that speaks directly to their unique needs.",
+  "solution": "Imagine if your existing materials—your whitepapers, pitch decks, and case studies—were automatically reassembled to speak directly to each prospect. With just a work email and a few cues from your profile, Chhuma transforms your content into a personalized experience.\\n\\nUse Cases:\\n- Recruitment Campaigns: Tailor outreach pages so that each candidate sees benefits specific to their role.\\n- Client Pitches: Rearrange presentations to emphasize value points that resonate with every potential partner.\\n- Internal Communications: Customize updates for different regional teams, making global messaging more relevant.\\n\\nChhuma doesn’t generate new content—it intelligently repurposes what you already have, preserving your authentic voice while amplifying its impact.",
+  "close": "This isn’t about selling a miracle—it’s about exploring a smarter way to connect. If you’re curious about transforming static B2B content into a dynamic, personalized experience that truly speaks to each individual, let’s have a conversation. No flashy buttons or over-the-top promises—just an honest chat about making business content as engaging as the world around us."
+}`;
 
     const userPrompt = `Visitor Data:
 Name: ${name}
@@ -101,20 +181,21 @@ Company: ${company}
 Industry: ${industry}
 Workflow Pain Points: ${workflowPainPoints.join(", ")}
 
-Using the guidelines above, generate a personalized marketing pitch that:
-1. Acknowledges the visitor personally.
-2. Describes their workflow context and friction points.
-3. Explains how Chhuma's dynamic content adaptation can solve these issues.
-4. Concludes with a confident call to action.`;
+Using the guidelines above, generate a personalized marketing pitch with the five sections:
+[Opener], [Ice-Breaker], [Friction Points], [Solution], and [Close].
 
-    // 6. Instantiate the OpenAI client using the API key from your environment variable.
+IMPORTANT: At the end, output valid JSON with exactly these keys:
+opener, iceBreaker, frictionPoints, solution, close.
+Do not include any extra text outside the JSON.`;
+
+    // 7. Instantiate the OpenAI client using the API key from your environment variable.
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
 
-    // 7. Call the OpenAI Chat Completions API
+    // 8. Call the OpenAI Chat Completions API.
     const openaiResponse = await openai.responses.create({
-      model: "gpt-3.5-turbo", // Change to "gpt-4" if needed
+      model: "gpt-4o", // Using the GPT-4 model as specified
       input: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
@@ -123,29 +204,45 @@ Using the guidelines above, generate a personalized marketing pitch that:
       max_output_tokens: 2048,
       top_p: 1,
       stream: false,
-      store: false
+      store: true
     });
 
     console.log("OpenAI response:", openaiResponse);
-
-    // 8. Extract the AI-generated message.
-    const aiMessage = openaiResponse.output_text ||
+    const rawAiMessage = openaiResponse.output_text ||
       (openaiResponse.choices && openaiResponse.choices[0]?.message?.content) ||
       "No content generated";
 
-    // 9. Store the generated output in the chatOutputs collection.
-    const storeQuery = email ? { email } : { linkedInUrl };
+    // 9. Attempt to parse the AI response as JSON using a regular expression.
+    let parsed;
+    try {
+      const jsonMatch = rawAiMessage.match(/{[\s\S]*}/);
+      if (!jsonMatch) {
+        throw new Error("No JSON object found in AI response");
+      }
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.error("JSON parse error. Full text was:", rawAiMessage);
+      return res.status(500).json({ error: "Failed to parse AI JSON." });
+    }
+
+    // 10. Destructure the parsed JSON.
+    const { opener, iceBreaker, frictionPoints, solution, close } = parsed;
+
+    // 11. Store the generated output in the chatOutputs collection.
     await chatOutputs.insertOne({
-      ...storeQuery,
-      aiMessage,
+      ...queryField,
+      opener,
+      iceBreaker,
+      frictionPoints,
+      solution,
+      close,
       createdAt: new Date()
     });
-
     console.log(`AI output stored in DB for ${email || linkedInUrl}.`);
 
-    // 10. Return the generated message to the client.
-    return res.status(200).json({ message: aiMessage });
-
+    // 12. Return the generated sections to the client.
+    return res.status(200).json({ opener, iceBreaker, frictionPoints, solution, close });
+    
   } catch (error) {
     console.error("Error in /api/personalize:", error);
     return res.status(500).json({ error: error.message || "Failed to generate content" });
