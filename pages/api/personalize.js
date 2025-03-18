@@ -1,6 +1,5 @@
 // pages/api/personalize.js
 
-import NextCors from "nextjs-cors";
 import clientPromise from "../../lib/mongodb";
 import OpenAI from "openai";
 import fetch from "node-fetch"; // Only needed if you're using node-fetch for ReverseContact
@@ -18,19 +17,30 @@ function extractJsonBlock(aiMessage) {
 }
 
 export default async function handler(req, res) {
-  // --- [A] Enable CORS using nextjs-cors middleware ---
-  await NextCors(req, res, {
-    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-    origin: "*", // For development. In production, replace "*" with your allowed origin(s)
-    optionsSuccessStatus: 200,
-  });
+  // ----- [A] Set up CORS headers dynamically -----
+  const allowedOrigins = [
+    "https://your-framer-site.com", // Replace with your actual Framer site URL
+    "https://studio.framer.com",
+    "http://localhost:3000" // Include localhost for development if needed
+  ];
+  // Grab the request origin; if none, use "*" as fallback.
+  const requestOrigin = req.headers.origin || "*";
+  // If the request origin is in our allowed list, use it; otherwise, default to the first allowed.
+  const originToSet = allowedOrigins.includes(requestOrigin)
+    ? requestOrigin
+    : allowedOrigins[0];
 
-  // --- [B] Handle OPTIONS requests explicitly ---
+  res.setHeader("Access-Control-Allow-Origin", originToSet);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Vary", "Origin");
+
+  // ----- [B] Handle the preflight (OPTIONS) request -----
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  // --- [C] Enforce POST for the main logic ---
+  // ----- [C] Enforce POST for the main logic -----
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed. Use POST." });
   }
@@ -38,30 +48,26 @@ export default async function handler(req, res) {
   // Expect a JSON body with either an "email" or "linkedInUrl" field.
   const { email, linkedInUrl } = req.body;
   if (!email && !linkedInUrl) {
-    return res
-      .status(400)
-      .json({ error: "Missing required field: email or linkedInUrl" });
+    return res.status(400).json({ error: "Missing required field: email or linkedInUrl" });
   }
 
-  // Decide which field to use for MongoDB lookup
+  // Decide which field to use for MongoDB lookup.
   const queryField = email ? { email } : { linkedInUrl };
 
   try {
-    // 1. Connect to MongoDB
+    // 1. Connect to MongoDB.
     const client = await clientPromise;
-    const db = client.db("myDB"); // Replace with your DB name if needed
+    const db = client.db("myDB"); // Replace with your actual DB name if needed
 
-    // Collections for ReverseContact data and ChatGPT outputs
+    // Collections for ReverseContact data & ChatGPT outputs.
     const reverseContacts = db.collection("reverseContacts");
     const chatOutputs = db.collection("chatOutputs");
 
-    // 2. Check for a cached AI output
+    // 2. Check if there's already a cached AI output.
     const cachedOutput = await chatOutputs.findOne(queryField);
     if (cachedOutput) {
       console.log(
-        `Returning cached AI output for ${
-          email ? "email" : "LinkedIn URL"
-        }: ${email || linkedInUrl}`
+        `Returning cached AI output for ${email ? "email" : "LinkedIn URL"}: ${email || linkedInUrl}`
       );
       return res.status(200).json({
         opener: cachedOutput.opener,
@@ -72,10 +78,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // 3. Retrieve ReverseContact data
+    // 3. Retrieve ReverseContact data.
     let record = await reverseContacts.findOne(queryField);
     if (!record) {
-      // No record found; call ReverseContact API
+      // Not in DB → call ReverseContact API.
       let lookupUrl = "";
       if (email) {
         const encodedEmail = encodeURIComponent(email);
@@ -91,13 +97,11 @@ export default async function handler(req, res) {
 
       if (!reverseData.success) {
         return res.status(404).json({
-          error: `No ReverseContact data found for that ${
-            email ? "email" : "LinkedIn URL"
-          }`,
+          error: `No ReverseContact data found for that ${email ? "email" : "LinkedIn URL"}`,
         });
       }
 
-      // Store the new ReverseContact data in DB
+      // Store the new ReverseContact data in DB.
       const newRecord = {
         ...(email ? { email } : { linkedInUrl }),
         data: reverseData,
@@ -107,7 +111,7 @@ export default async function handler(req, res) {
       record = newRecord;
     }
 
-    // 4. Extract fields from ReverseContact data
+    // 4. Extract relevant fields from ReverseContact.
     const person = record.data.person || {};
     const companyData = record.data.company || {};
     const workflowPainPoints = record.data.workflow_pain_points || [];
@@ -189,6 +193,7 @@ solution
 close
 Each key should contain the corresponding section text exactly as developed (length and composition remain unchanged).`;
 
+    // 6. Construct the user prompt.
     const userPrompt = `Visitor Data:
 Name: ${name}
 Title: ${title}
@@ -203,14 +208,14 @@ IMPORTANT: At the end, output valid JSON with exactly these keys:
 opener, iceBreaker, frictionPoints, solution, close.
 Do not include any extra text outside the JSON.`;
 
-    // 7. Instantiate the OpenAI client using the API key from your environment variable.
-    const openai = new OpenAI({
+    // 7. Instantiate the OpenAI client using the API key.
+    const openaiClient = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
     });
 
     // 8. Call the OpenAI Chat Completions API.
-    const openaiResponse = await openai.responses.create({
-      model: "gpt-4o",
+    const openaiResponse = await openaiClient.responses.create({
+      model: "gpt-4o", // Using the GPT-4 model as specified
       input: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -229,9 +234,10 @@ Do not include any extra text outside the JSON.`;
       (openaiResponse.choices && openaiResponse.choices[0]?.message?.content) ||
       "No content generated";
 
-    // 9. Attempt to parse the AI response as JSON using a regular expression.
+    // 9. Attempt to parse the AI response as JSON.
     let parsed;
     try {
+      // Look for the first curly-brace block
       const jsonMatch = rawAiMessage.match(/{[\s\S]*}/);
       if (!jsonMatch) {
         throw new Error("No JSON object found in AI response");
@@ -257,7 +263,7 @@ Do not include any extra text outside the JSON.`;
     });
     console.log(`AI output stored in DB for ${email || linkedInUrl}.`);
 
-    // 12. Return the generated sections to the client.
+    // 12. Return the final JSON to the client.
     return res.status(200).json({
       opener,
       iceBreaker,
@@ -267,8 +273,6 @@ Do not include any extra text outside the JSON.`;
     });
   } catch (error) {
     console.error("Error in /api/personalize:", error);
-    return res
-      .status(500)
-      .json({ error: error.message || "Failed to generate content" });
+    return res.status(500).json({ error: error.message || "Failed to generate content" });
   }
 }
