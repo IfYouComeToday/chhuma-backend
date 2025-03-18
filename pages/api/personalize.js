@@ -4,6 +4,18 @@ import clientPromise from '../../lib/mongodb';
 import OpenAI from 'openai';
 import fetch from 'node-fetch'; // Include this for fetch if needed
 
+// ----- Helper Function -----
+// This function extracts the JSON block from the AI's response.
+// It looks for a code block that starts with ```json and ends with ```.
+// If it doesn't find one, it throws an error.
+function extractJsonBlock(aiMessage) {
+  const match = aiMessage.match(/```json\s*([\s\S]*?)```/);
+  if (!match) {
+    throw new Error("Failed to find fenced JSON in the AI response.");
+  }
+  return match[1].trim();
+}
+
 export default async function handler(req, res) {
   // 0. Handle the preflight (OPTIONS) request
   if (req.method === 'OPTIONS') {
@@ -121,7 +133,6 @@ Vivid Imagery & Metaphors:
 Use evocative language when needed, but maintain brevity.
 Rhythmic & Punctuated:
 Vary sentence lengths for emphasis without sacrificing clarity.
-
 3. Sections and Their Purpose
 We broke down the pitch into five key sections. Each section has a defined role:
 
@@ -173,7 +184,6 @@ For example, a valid output for a visitor might be:
   "solution": "Imagine if your existing materials—your whitepapers, pitch decks, and case studies—were automatically reassembled to speak directly to each prospect. With just a work email and a few cues from your profile, Chhuma transforms your content into a personalized experience.\\n\\nUse Cases:\\n- Recruitment Campaigns: Tailor outreach pages so that each candidate sees benefits specific to their role.\\n- Client Pitches: Rearrange presentations to emphasize value points that resonate with every potential partner.\\n- Internal Communications: Customize updates for different regional teams, making global messaging more relevant.\\n\\nChhuma doesn’t generate new content—it intelligently repurposes what you already have, preserving your authentic voice while amplifying its impact.",
   "close": "This isn’t about selling a miracle—it’s about exploring a smarter way to connect. If you’re curious about transforming static B2B content into a dynamic, personalized experience that truly speaks to each individual, let’s have a conversation. No flashy buttons or over-the-top promises—just an honest chat about making business content as engaging as the world around us."
 }`;
-
     const userPrompt = `Visitor Data:
 Name: ${name}
 Title: ${title}
