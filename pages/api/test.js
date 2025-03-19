@@ -1,35 +1,34 @@
 // pages/api/test.js
 
-// Step 1: Create a helper function to wrap your handler with CORS support
+// A helper function to wrap your handler with CORS support and a debug header
 const allowCors = (fn) => async (req, res) => {
+  // Debug header to confirm our code runs
+  res.setHeader("X-Debug", "CORS wrapper executed");
+
   // Set CORS headers
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  // Use the request’s Origin header, or default to "*"
   const origin = req.headers.origin || "*";
   res.setHeader("Access-Control-Allow-Origin", origin);
-  // List the HTTP methods your API accepts
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,POST,PUT");
-  // List the headers that are allowed in requests
   res.setHeader(
     "Access-Control-Allow-Headers",
     "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization"
   );
   
-  // If this is a preflight (OPTIONS) request, respond immediately with 200 OK
+  // If it's an OPTIONS (preflight) request, respond immediately
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
   }
   
-  // Otherwise, call your actual API handler
+  // Otherwise, call the actual handler
   return await fn(req, res);
 };
 
-// Step 2: Create your original API handler function
+// Your API handler – it just returns a simple message
 const handler = (req, res) => {
-  // This is a simple response that returns JSON
   res.status(200).json({ message: "Hello from the API!" });
 };
 
-// Step 3: Export your API handler wrapped with the allowCors function
+// Export the handler wrapped with our CORS function
 export default allowCors(handler);
