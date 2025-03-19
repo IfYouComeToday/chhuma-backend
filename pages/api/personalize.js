@@ -25,10 +25,10 @@ export default async function handler(req, res) {
   ];
   // Grab the request origin; if none, use "*" as fallback.
   const requestOrigin = req.headers.origin || "*";
-  // If the request origin is in our allowed list, use it; otherwise, default to the first allowed.
+  // If the request origin is in our allowed list, use it; otherwise, default to "*" to allow any origin.
   const originToSet = allowedOrigins.includes(requestOrigin)
     ? requestOrigin
-    : allowedOrigins[0];
+    : "*";
 
   res.setHeader("Access-Control-Allow-Origin", originToSet);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
