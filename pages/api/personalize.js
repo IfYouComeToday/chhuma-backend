@@ -18,8 +18,9 @@ function extractJsonBlock(aiMessage) {
 
 export default async function handler(req, res) {
   // ----- [A] Set up CORS headers dynamically -----
+  // Update allowedOrigins to include your Framer URL
   const allowedOrigins = [
-    "https://peaceful-one-060007.framer.app/", // Replace with your actual Framer site URL
+    "https://peaceful-one-060007.framer.app", // Your Framer site URL
     "https://studio.framer.com",
     "http://localhost:3000" // For development
   ];
