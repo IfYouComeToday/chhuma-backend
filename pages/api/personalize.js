@@ -19,13 +19,13 @@ function extractJsonBlock(aiMessage) {
 export default async function handler(req, res) {
   // ----- [A] Set up CORS headers dynamically -----
   const allowedOrigins = [
-    "https://your-framer-site.com", // Replace with your actual Framer site URL
+    "https://peaceful-one-060007.framer.app/", // Replace with your actual Framer site URL
     "https://studio.framer.com",
-    "http://localhost:3000" // Include localhost for development if needed
+    "http://localhost:3000" // For development
   ];
   // Grab the request origin; if none, use "*" as fallback.
   const requestOrigin = req.headers.origin || "*";
-  // If the request origin is in our allowed list, use it; otherwise, default to "*" to allow any origin.
+  // If the request origin is in our allowed list, use it; otherwise, default to "*"
   const originToSet = allowedOrigins.includes(requestOrigin)
     ? requestOrigin
     : "*";
@@ -48,7 +48,9 @@ export default async function handler(req, res) {
   // Expect a JSON body with either an "email" or "linkedInUrl" field.
   const { email, linkedInUrl } = req.body;
   if (!email && !linkedInUrl) {
-    return res.status(400).json({ error: "Missing required field: email or linkedInUrl" });
+    return res
+      .status(400)
+      .json({ error: "Missing required field: email or linkedInUrl" });
   }
 
   // Decide which field to use for MongoDB lookup.
@@ -273,6 +275,8 @@ Do not include any extra text outside the JSON.`;
     });
   } catch (error) {
     console.error("Error in /api/personalize:", error);
-    return res.status(500).json({ error: error.message || "Failed to generate content" });
+    return res
+      .status(500)
+      .json({ error: error.message || "Failed to generate content" });
   }
 }
