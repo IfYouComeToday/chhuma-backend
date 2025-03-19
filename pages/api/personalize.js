@@ -17,16 +17,16 @@ function extractJsonBlock(aiMessage) {
 }
 
 export default async function handler(req, res) {
+  // ----- Debug Log for Step 1 -----
+  console.log("API endpoint reached, method:", req.method);
+
   // ----- [A] Set up CORS headers dynamically -----
-  // Update allowedOrigins to include your Framer URL
   const allowedOrigins = [
     "https://peaceful-one-060007.framer.app", // Your Framer site URL
     "https://studio.framer.com",
     "http://localhost:3000" // For development
   ];
-  // Grab the request origin; if none, use "*" as fallback.
   const requestOrigin = req.headers.origin || "*";
-  // If the request origin is in our allowed list, use it; otherwise, default to "*"
   const originToSet = allowedOrigins.includes(requestOrigin)
     ? requestOrigin
     : "*";
@@ -49,12 +49,9 @@ export default async function handler(req, res) {
   // Expect a JSON body with either an "email" or "linkedInUrl" field.
   const { email, linkedInUrl } = req.body;
   if (!email && !linkedInUrl) {
-    return res
-      .status(400)
-      .json({ error: "Missing required field: email or linkedInUrl" });
+    return res.status(400).json({ error: "Missing required field: email or linkedInUrl" });
   }
 
-  // Decide which field to use for MongoDB lookup.
   const queryField = email ? { email } : { linkedInUrl };
 
   try {
@@ -69,9 +66,7 @@ export default async function handler(req, res) {
     // 2. Check if there's already a cached AI output.
     const cachedOutput = await chatOutputs.findOne(queryField);
     if (cachedOutput) {
-      console.log(
-        `Returning cached AI output for ${email ? "email" : "LinkedIn URL"}: ${email || linkedInUrl}`
-      );
+      console.log(`Returning cached AI output for ${email ? "email" : "LinkedIn URL"}: ${email || linkedInUrl}`);
       return res.status(200).json({
         opener: cachedOutput.opener,
         iceBreaker: cachedOutput.iceBreaker,
@@ -276,8 +271,6 @@ Do not include any extra text outside the JSON.`;
     });
   } catch (error) {
     console.error("Error in /api/personalize:", error);
-    return res
-      .status(500)
-      .json({ error: error.message || "Failed to generate content" });
+    return res.status(500).json({ error: error.message || "Failed to generate content" });
   }
 }
