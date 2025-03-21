@@ -3,6 +3,15 @@
 import clientPromise from "../../lib/mongodb";
 import OpenAI from "openai";
 import fetch from "node-fetch"; // Only needed if you're using node-fetch for ReverseContact
+import { PostHog } from 'posthog-node';
+
+// Initialize PostHog
+const posthog = new PostHog(
+  process.env.NEXT_PUBLIC_POSTHOG_KEY,
+  {
+    host: process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://app.posthog.com'
+  }
+);
 
 // ----- Helper Function -----
 // This function extracts the JSON block from the AI's response.
@@ -17,6 +26,8 @@ function extractJsonBlock(aiMessage) {
 }
 
 export default async function handler(req, res) {
+  const startTime = Date.now();
+  
   // ----- Debug Log for Step 1 -----
   console.log("API endpoint reached, method:", req.method);
 
@@ -53,6 +64,19 @@ export default async function handler(req, res) {
   }
 
   const queryField = email ? { email } : { linkedInUrl };
+  const distinctId = email || linkedInUrl; // For PostHog
+
+  // Track API request in PostHog
+  posthog.capture({
+    distinctId: distinctId,
+    event: 'personalization_api_request',
+    properties: {
+      email: !!email,
+      linkedInUrl: !!linkedInUrl,
+      userAgent: req.headers['user-agent'],
+      referrer: req.headers.referer || null
+    }
+  });
 
   try {
     // 1. Connect to MongoDB.
@@ -67,6 +91,16 @@ export default async function handler(req, res) {
     const cachedOutput = await chatOutputs.findOne(queryField);
     if (cachedOutput) {
       console.log(`Returning cached AI output for ${email ? "email" : "LinkedIn URL"}: ${email || linkedInUrl}`);
+      
+      // Track cache hit in PostHog
+      posthog.capture({
+        distinctId: distinctId,
+        event: 'personalization_cache_hit',
+        properties: {
+          responseTime: Date.now() - startTime
+        }
+      });
+      
       return res.status(200).json({
         opener: cachedOutput.opener,
         iceBreaker: cachedOutput.iceBreaker,
@@ -79,6 +113,16 @@ export default async function handler(req, res) {
     // 3. Retrieve ReverseContact data.
     let record = await reverseContacts.findOne(queryField);
     if (!record) {
+      // Track ReverseContact API call
+      posthog.capture({
+        distinctId: distinctId,
+        event: 'reversecontact_api_call',
+        properties: {
+          email: !!email,
+          linkedInUrl: !!linkedInUrl
+        }
+      });
+      
       // Not in DB → call ReverseContact API.
       let lookupUrl = "";
       if (email) {
@@ -94,10 +138,30 @@ export default async function handler(req, res) {
       const reverseData = await reverseResponse.json();
 
       if (!reverseData.success) {
+        // Track ReverseContact failure
+        posthog.capture({
+          distinctId: distinctId,
+          event: 'reversecontact_api_failure',
+          properties: {
+            statusCode: reverseResponse.status,
+            errorMessage: reverseData.error || 'Unknown error'
+          }
+        });
+        
         return res.status(404).json({
           error: `No ReverseContact data found for that ${email ? "email" : "LinkedIn URL"}`,
         });
       }
+      
+      // Track ReverseContact success
+      posthog.capture({
+        distinctId: distinctId,
+        event: 'reversecontact_api_success',
+        properties: {
+          hasPersonData: !!reverseData.person,
+          hasCompanyData: !!reverseData.company
+        }
+      });
 
       // Store the new ReverseContact data in DB.
       const newRecord = {
@@ -119,14 +183,27 @@ export default async function handler(req, res) {
     const company = companyData.name || "your company";
     const industry = companyData.industry || "your industry";
 
+    // Track personalization parameters
+    posthog.capture({
+      distinctId: distinctId,
+      event: 'personalization_parameters',
+      properties: {
+        hasName: !!person.firstName,
+        hasTitle: !!person.headline,
+        hasCompany: !!companyData.name,
+        hasIndustry: !!companyData.industry,
+        hasPainPoints: workflowPainPoints.length > 0
+      }
+    });
+
     // 5. Construct the OpenAI prompts using your new prompt code.
     const systemPrompt = `Chhuma Website Pitch – Detailed Documentation
 1. Overarching Context of Chhuma
 Vision:
-Chhuma is designed to redefine what “responsive” means in B2B content. Rather than simply adapting to the device, Chhuma adapts content to the viewer’s identity and context. It’s about making business communication as personalized and engaging as consumer experiences.
+Chhuma is designed to redefine what "responsive" means in B2B content. Rather than simply adapting to the device, Chhuma adapts content to the viewer's identity and context. It's about making business communication as personalized and engaging as consumer experiences.
 
 Purpose of Generation:
-The aim is to showcase how Chhuma works by transforming existing marketing assets into a personalized sales pitch for each user. This proof-of-concept demonstrates that Chhuma can repurpose verified content (without generating new, “hallucinated” data) while preserving the brand’s voice.
+The aim is to showcase how Chhuma works by transforming existing marketing assets into a personalized sales pitch for each user. This proof-of-concept demonstrates that Chhuma can repurpose verified content (without generating new, "hallucinated" data) while preserving the brand's voice.
 
 2. Voicing and Tonality
 Voice Characteristics:
@@ -156,32 +233,32 @@ We broke down the pitch into five key sections. Each section has a defined role:
 [Opener] – Big Idea:
 Introduce the core proposition. This section should address the user by first name and establish why the concept matters.
 Example (from Amandeep pitch):
-“Amandeep, you know that at Automattic every interaction is tailored—from distributed teams to the way you supercharge recruitment. Yet, too many B2B pitches still feel generic. What if your marketing content could adapt as dynamically as your recruiting strategies?”
+"Amandeep, you know that at Automattic every interaction is tailored—from distributed teams to the way you supercharge recruitment. Yet, too many B2B pitches still feel generic. What if your marketing content could adapt as dynamically as your recruiting strategies?"
 
 [Ice-Breaker]:
-Break the fourth wall intelligently. This section should challenge expectations, acknowledge the viewer’s familiarity with personalized apps, and hint at the demo’s irreverent spirit—without overpraising or fluff.
+Break the fourth wall intelligently. This section should challenge expectations, acknowledge the viewer's familiarity with personalized apps, and hint at the demo's irreverent spirit—without overpraising or fluff.
 Example:
-“Before you roll your eyes thinking, ‘Another sales pitch,’ let’s get real. You’re used to apps that intuit your every need, but business content still serves the same tired message to everyone. And while you’re reading this, know that a dash of irreverence has been coded into this demo—just enough to challenge the status quo without taking itself too seriously.”
+"Before you roll your eyes thinking, 'Another sales pitch,' let's get real. You're used to apps that intuit your every need, but business content still serves the same tired message to everyone. And while you're reading this, know that a dash of irreverence has been coded into this demo—just enough to challenge the status quo without taking itself too seriously."
 
 [Friction Points]:
 Identify the core problem with current B2B content—namely, its generic, one-size-fits-all approach.
 Example:
-“Every day, companies deliver the same generic message to CEOs, marketers, and engineers alike—like handing every Netflix viewer the same movie and expecting a standing ovation. When prospects feel overlooked, they naturally search for a solution that speaks directly to their unique needs.”
+"Every day, companies deliver the same generic message to CEOs, marketers, and engineers alike—like handing every Netflix viewer the same movie and expecting a standing ovation. When prospects feel overlooked, they naturally search for a solution that speaks directly to their unique needs."
 
 [Solution]:
-Describe how Chhuma transforms existing materials into personalized content. This is the most detailed section and should include use cases relevant to the viewer’s workflow. Emphasize that Chhuma repurposes rather than generates new content, preserving authenticity.
+Describe how Chhuma transforms existing materials into personalized content. This is the most detailed section and should include use cases relevant to the viewer's workflow. Emphasize that Chhuma repurposes rather than generates new content, preserving authenticity.
 Example (compact version):
-“Imagine if your existing materials—your whitepapers, pitch decks, and case studies—were automatically reassembled to speak directly to each prospect. With just a work email and a few cues from your profile, Chhuma transforms your content into a personalized experience.
+"Imagine if your existing materials—your whitepapers, pitch decks, and case studies—were automatically reassembled to speak directly to each prospect. With just a work email and a few cues from your profile, Chhuma transforms your content into a personalized experience.
 Use Cases:
 - Recruitment Campaigns: Tailor outreach pages so that each candidate sees benefits specific to their role.
 - Client Pitches: Rearrange presentations to emphasize value points that resonate with every potential partner.
 - Internal Communications: Customize updates for different regional teams, making global messaging more relevant.
-Chhuma doesn’t generate new content—it intelligently repurposes what you already have, preserving your authentic voice while amplifying its impact.”
+Chhuma doesn't generate new content—it intelligently repurposes what you already have, preserving your authentic voice while amplifying its impact."
 
 [Close]:
 End with a gentle, conversational call to action that invites further discussion rather than demanding immediate clicks.
 Example:
-“This isn’t about selling a miracle—it’s about exploring a smarter way to connect. If you’re curious about transforming static B2B content into a dynamic, personalized experience that truly speaks to each individual, let’s have a conversation. No flashy buttons or over-the-top promises—just an honest chat about making business content as engaging as the world around us.”
+"This isn't about selling a miracle—it's about exploring a smarter way to connect. If you're curious about transforming static B2B content into a dynamic, personalized experience that truly speaks to each individual, let's have a conversation. No flashy buttons or over-the-top promises—just an honest chat about making business content as engaging as the world around us."
 
 Below is the final documentation of our process. In addition to all the details already covered, please note that the output must be sectioned/parsed into keys as follows:
 opener
@@ -206,6 +283,15 @@ IMPORTANT: At the end, output valid JSON with exactly these keys:
 opener, iceBreaker, frictionPoints, solution, close.
 Do not include any extra text outside the JSON.`;
 
+    // Track OpenAI request
+    posthog.capture({
+      distinctId: distinctId,
+      event: 'openai_request_started',
+      properties: {
+        model: "gpt-4o"
+      }
+    });
+
     // 7. Instantiate the OpenAI client using the API key.
     const openaiClient = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
@@ -226,6 +312,15 @@ Do not include any extra text outside the JSON.`;
     });
 
     console.log("OpenAI response:", openaiResponse);
+    
+    // Track OpenAI response
+    posthog.capture({
+      distinctId: distinctId,
+      event: 'openai_request_completed',
+      properties: {
+        responseTime: Date.now() - startTime
+      }
+    });
 
     const rawAiMessage =
       openaiResponse.output_text ||
@@ -241,7 +336,22 @@ Do not include any extra text outside the JSON.`;
         throw new Error("No JSON object found in AI response");
       }
       parsed = JSON.parse(jsonMatch[0]);
+      
+      // Track successful parsing
+      posthog.capture({
+        distinctId: distinctId,
+        event: 'openai_response_parsed_successfully'
+      });
     } catch (err) {
+      // Track parsing error
+      posthog.capture({
+        distinctId: distinctId,
+        event: 'openai_response_parse_error',
+        properties: {
+          error: err.message
+        }
+      });
+      
       console.error("JSON parse error. Full text was:", rawAiMessage);
       return res.status(500).json({ error: "Failed to parse AI JSON." });
     }
@@ -260,6 +370,23 @@ Do not include any extra text outside the JSON.`;
       createdAt: new Date(),
     });
     console.log(`AI output stored in DB for ${email || linkedInUrl}.`);
+    
+    // Track successful completion
+    posthog.capture({
+      distinctId: distinctId,
+      event: 'personalization_completed_successfully',
+      properties: {
+        totalTime: Date.now() - startTime,
+        openerLength: opener.length,
+        iceBreakerLength: iceBreaker.length,
+        frictionPointsLength: frictionPoints.length,
+        solutionLength: solution.length,
+        closeLength: close.length
+      }
+    });
+
+    // Flush events before response to ensure they're sent
+    await posthog.shutdown();
 
     // 12. Return the final JSON to the client.
     return res.status(200).json({
@@ -270,6 +397,21 @@ Do not include any extra text outside the JSON.`;
       close,
     });
   } catch (error) {
+    // Track error in PostHog
+    posthog.capture({
+      distinctId: distinctId,
+      event: 'personalization_error',
+      properties: {
+        error: error.message,
+        errorType: error.name,
+        stack: error.stack,
+        processingTime: Date.now() - startTime
+      }
+    });
+    
+    // Ensure events are sent even on error
+    await posthog.shutdown();
+    
     console.error("Error in /api/personalize:", error);
     return res.status(500).json({ error: error.message || "Failed to generate content" });
   }
